@@ -1,0 +1,1166 @@
+{
+  "datasets": [
+    {
+      "name": "2ca97230",
+      "displayName": "Anomaly Tracker",
+      "queryLines": [
+        "-- WEEKDAY/WEEKEND for 2025, by site and platform\n",
+        "WITH base AS (\n",
+        "  SELECT\n",
+        "    reporting_period_site_date AS date,\n",
+        "    site,                     \n",
+        "    platform,                 \n",
+        "    CASE    -- Defining the day_type\n",
+        "      WHEN EXTRACT(DAYOFWEEK FROM reporting_period_site_date) IN (1, 7) THEN 'Weekend'\n",
+        "      ELSE 'Weekday'\n",
+        "    END AS day_type,\n",
+        "    -- Apply Complete\n",
+        "    SUM(job_application_completes_native_distinct_by_candidate_job) AS apply_complete,\n",
+        "    -- Apply Load\n",
+        "    SUM(job_application_displays_native_distinct_by_candidate_job) AS apply_load,\n",
+        "    -- Apply Complete CVR\n",
+        "    SUM(job_apply_displayed_to_complete_conversions_native_distinct_by_candidate_job)/ SUM(job_application_displays_native_distinct_by_candidate_job) AS apply_cvr\n",
+        "  FROM dataplatform.ai_analytics_behavioural_data_reporting.cube_candidate_apply_experience\n",
+        "  WHERE reporting_granularity = 'daily'\n",
+        "    AND reporting_period_site_date BETWEEN '2024-11-01' AND '2025-12-31'\n",
+        "  GROUP BY\n",
+        "    reporting_period_site_date,\n",
+        "    site,\n",
+        "    platform,\n",
+        "    day_type\n",
+        "\n",
+        "UNION ALL \n",
+        "\n",
+        "  SELECT\n",
+        "    reporting_period_site_date AS date,\n",
+        "    'all' AS site,                  \n",
+        "    platform,                 \n",
+        "    CASE   -- Defining the day_type\n",
+        "      WHEN EXTRACT(DAYOFWEEK FROM reporting_period_site_date) IN (1, 7) THEN 'Weekend'\n",
+        "      ELSE 'Weekday'\n",
+        "    END AS day_type,\n",
+        "    -- Apply Complete\n",
+        "    SUM(job_application_completes_native_distinct_by_candidate_job) AS apply_complete,\n",
+        "    -- Apply Load\n",
+        "    SUM(job_application_displays_native_distinct_by_candidate_job) AS apply_load,\n",
+        "    -- Apply Complete CVR\n",
+        "     SUM(job_apply_displayed_to_complete_conversions_native_distinct_by_candidate_job)/ SUM(job_application_displays_native_distinct_by_candidate_job) AS apply_cvr\n",
+        "  FROM dataplatform.ai_analytics_behavioural_data_reporting.cube_candidate_apply_experience\n",
+        "  WHERE reporting_granularity = 'daily'\n",
+        "    AND reporting_period_site_date BETWEEN '2024-11-01' AND '2025-12-31'\n",
+        "  GROUP BY\n",
+        "    reporting_period_site_date,\n",
+        "    platform,\n",
+        "    day_type\n",
+        "),\n",
+        "\n",
+        "\n",
+        "-- Scalability (Include New Metrics)\n",
+        "metric_dt AS (\n",
+        "  SELECT \n",
+        "        date, \n",
+        "        site, \n",
+        "        platform, \n",
+        "        day_type,\n",
+        "        'Apply Complete' AS metric_type,\n",
+        "         apply_complete  AS metric_value\n",
+        "  FROM base\n",
+        "  UNION ALL\n",
+        "  SELECT \n",
+        "         date, \n",
+        "         site, \n",
+        "         platform, \n",
+        "         day_type,\n",
+        "         'Apply Load' AS metric_type,\n",
+        "         apply_load   AS metric_value\n",
+        "  FROM base\n",
+        "  UNION ALL\n",
+        "  SELECT \n",
+        "         date, \n",
+        "         site, \n",
+        "         platform, \n",
+        "         day_type,\n",
+        "         'Apply CVR' AS metric_type,\n",
+        "         apply_cvr   AS metric_value\n",
+        "  FROM base\n",
+        "),\n",
+        "\n",
+        "-- Weekday (Past 22 weekday days) per site + platform\n",
+        "weekday_roll AS (\n",
+        "  SELECT\n",
+        "    date,\n",
+        "    site,\n",
+        "    platform,\n",
+        "    metric_type,\n",
+        "    AVG(metric_value) OVER (\n",
+        "      PARTITION BY site, platform, metric_type\n",
+        "      ORDER BY date\n",
+        "      ROWS BETWEEN 22 PRECEDING AND 1 PRECEDING\n",
+        "    ) AS rolling_avg,\n",
+        "    STDDEV_SAMP(metric_value) OVER (\n",
+        "      PARTITION BY site, platform, metric_type\n",
+        "      ORDER BY date\n",
+        "      ROWS BETWEEN 22 PRECEDING AND 1 PRECEDING\n",
+        "    ) AS rolling_std\n",
+        "  FROM metric_dt\n",
+        "  WHERE day_type = 'Weekday'\n",
+        "),\n",
+        "\n",
+        "-- Weekend (Past 27 weekend days) \n",
+        "weekend_roll AS (\n",
+        "  SELECT\n",
+        "    date,\n",
+        "    site,\n",
+        "    platform,\n",
+        "    metric_type,\n",
+        "    AVG(metric_value) OVER (\n",
+        "      PARTITION BY site, platform, metric_type\n",
+        "      ORDER BY date\n",
+        "      ROWS BETWEEN 27 PRECEDING AND 1 PRECEDING\n",
+        "    ) AS rolling_avg,\n",
+        "    STDDEV_SAMP(metric_value) OVER (\n",
+        "      PARTITION BY site, platform, metric_type\n",
+        "      ORDER BY date\n",
+        "      ROWS BETWEEN 27 PRECEDING AND 1 PRECEDING\n",
+        "    ) AS rolling_std\n",
+        "  FROM metric_dt\n",
+        "  WHERE day_type = 'Weekend'\n",
+        "),\n",
+        "\n",
+        "-- Rolling Averages Calculation\n",
+        "metric_calc AS (\n",
+        "SELECT\n",
+        "    a.date,\n",
+        "    a.site,\n",
+        "    a.platform,\n",
+        "    a.day_type,\n",
+        "    a.metric_type,\n",
+        "    a.metric_value,\n",
+        "    COALESCE(b.rolling_avg, c.rolling_avg) AS rolling_avg,\n",
+        "    COALESCE(b.rolling_std, c.rolling_std) AS rolling_std,\n",
+        "    COALESCE(b.rolling_avg, c.rolling_avg) + 2 * COALESCE(b.rolling_std, c.rolling_std) AS upper_2sd,\n",
+        "    COALESCE(b.rolling_avg, c.rolling_avg) - 2 * COALESCE(b.rolling_std, c.rolling_std) AS lower_2sd,\n",
+        "    COALESCE(b.rolling_avg, c.rolling_avg) + 3 * COALESCE(b.rolling_std, c.rolling_std) AS upper_3sd,\n",
+        "    COALESCE(b.rolling_avg, c.rolling_avg) - 3 * COALESCE(b.rolling_std, c.rolling_std) AS lower_3sd\n",
+        "FROM metric_dt AS a\n",
+        "LEFT JOIN weekday_roll AS b\n",
+        "  ON  a.date     = b.date\n",
+        "  AND a.site     = b.site\n",
+        "  AND a.platform = b.platform\n",
+        "  AND a.metric_type = b.metric_type\n",
+        "LEFT JOIN weekend_roll AS c\n",
+        "  ON  a.date     = c.date\n",
+        "  AND a.site     = c.site\n",
+        "  AND a.platform = c.platform\n",
+        "  AND a.metric_type = c.metric_type\n",
+        ")\n",
+        "\n",
+        "-- Final Selection\n",
+        "\n",
+        "SELECT\n",
+        "    date,\n",
+        "    site,\n",
+        "    platform,\n",
+        "    day_type,\n",
+        "    metric_type,   \n",
+        "    metric_value,\n",
+        "    rolling_avg,\n",
+        "    rolling_std,\n",
+        "    upper_2sd,\n",
+        "    lower_2sd,\n",
+        "    upper_3sd,\n",
+        "    lower_3sd,\n",
+        "    ((metric_value - rolling_avg) / rolling_avg) AS pct_diff,\n",
+        "    -- Anomaly Counter\n",
+        "    CASE \n",
+        "      WHEN metric_value > upper_2sd OR metric_value < lower_2sd \n",
+        "      THEN 1 ELSE 0 \n",
+        "    END AS anomaly_2sd,\n",
+        "    CASE \n",
+        "      WHEN metric_value > upper_3sd OR metric_value < lower_3sd \n",
+        "      THEN 1 ELSE 0 \n",
+        "    END AS anomaly_3sd,\n",
+        "    -- Anomaly Filtering\n",
+        "    CASE\n",
+        "      WHEN metric_value > upper_2sd OR metric_value < lower_2sd\n",
+        "      THEN 'Anomaly' ELSE 'Normal'\n",
+        "    END AS anomaly_filter_2sd,\n",
+        "    CASE\n",
+        "      WHEN metric_value > upper_3sd OR metric_value < lower_3sd\n",
+        "      THEN 'Anomaly' ELSE 'Normal'\n",
+        "    END AS anomaly_filter_3sd\n",
+        "FROM metric_calc\n",
+        "ORDER BY site, platform, date, metric_type;\n",
+        "   "
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "79bf4def",
+      "displayName": "Global Filters",
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS"
+    },
+    {
+      "name": "bcbb68d7",
+      "displayName": "Anomaly Tracker",
+      "layout": [
+        {
+          "widget": {
+            "name": "a",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "2ca97230",
+                  "fields": [
+                    {
+                      "name": "daily(date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    },
+                    {
+                      "name": "sum(metric_value)",
+                      "expression": "SUM(`metric_value`)"
+                    },
+                    {
+                      "name": "sum(rolling_avg)",
+                      "expression": "SUM(`rolling_avg`)"
+                    },
+                    {
+                      "name": "sum(upper_2sd)",
+                      "expression": "SUM(`upper_2sd`)"
+                    },
+                    {
+                      "name": "sum(lower_2sd)",
+                      "expression": "SUM(`lower_2sd`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`anomaly_filter_2sd` IN ('Anomaly')"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "combo",
+              "encodings": {
+                "x": {
+                  "fieldName": "daily(date)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "label": {
+                  "show": false
+                },
+                "y": {
+                  "primary": {
+                    "fields": [
+                      {
+                        "fieldName": "sum(metric_value)"
+                      }
+                    ]
+                  },
+                  "secondary": {
+                    "fields": [
+                      {
+                        "fieldName": "sum(rolling_avg)"
+                      },
+                      {
+                        "fieldName": "sum(upper_2sd)"
+                      },
+                      {
+                        "fieldName": "sum(lower_2sd)"
+                      }
+                    ]
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "mark": {
+                "colors": [
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 1
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 2
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 6
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 7
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 8
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "showDescription": false,
+                "title": "2 Standard Deviation",
+                "description": ""
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "apply-anomaly-for-2025",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "2ca97230",
+                  "fields": [
+                    {
+                      "name": "daily(date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    },
+                    {
+                      "name": "sum(metric_value)",
+                      "expression": "SUM(`metric_value`)"
+                    },
+                    {
+                      "name": "sum(rolling_avg)",
+                      "expression": "SUM(`rolling_avg`)"
+                    },
+                    {
+                      "name": "sum(upper_3sd)",
+                      "expression": "SUM(`upper_3sd`)"
+                    },
+                    {
+                      "name": "sum(lower_3sd)",
+                      "expression": "SUM(`lower_3sd`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`anomaly_filter_3sd` IN ('Anomaly')"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "combo",
+              "encodings": {
+                "x": {
+                  "fieldName": "daily(date)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "primary": {
+                    "fields": [
+                      {
+                        "fieldName": "sum(metric_value)"
+                      }
+                    ]
+                  },
+                  "secondary": {
+                    "fields": [
+                      {
+                        "fieldName": "sum(rolling_avg)"
+                      },
+                      {
+                        "fieldName": "sum(upper_3sd)"
+                      },
+                      {
+                        "fieldName": "sum(lower_3sd)"
+                      }
+                    ]
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "showDescription": false,
+                "title": "3 Standard Deviation",
+                "description": ""
+              },
+              "mark": {
+                "colors": [
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 1
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 2
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 5
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 6
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 7
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 8
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 11,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "1bc10be1",
+            "multilineTextboxSpec": {
+              "lines": [
+                "<span style=\"font-size:24px\">**Apply Anomalies Tracking (2024-2025)**</span><br>**Objective:&#32;** To track, visualise and indicate unusual traffic in a daily basis across apply metrics [apply complete, apply load, apply load to complete CVR (Apply Funnel)]<br><br>**Method**<br>- Predictions and upper/lower boundaries were determined using rolling averages and standard deviations for weekdays and weekends respectively<br>- Weekdays (Looks back at the past 22 weekday days \\~ 1 month), Weekends (Looks back at the past 18 weekend days \\~ 3 months)"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "date",
+            "queries": [
+              {
+                "name": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_monthly(date)",
+                "query": {
+                  "datasetName": "2ca97230",
+                  "fields": [
+                    {
+                      "name": "monthly(date)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `date`)"
+                    },
+                    {
+                      "name": "monthly(date)_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "monthly(date)",
+                    "queryName": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_monthly(date)"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Date"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "7476d71b",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "2ca97230",
+                  "fields": [
+                    {
+                      "name": "yearly(date)",
+                      "expression": "DATE_TRUNC(\"YEAR\", `date`)"
+                    },
+                    {
+                      "name": "sum(anomaly_2sd)",
+                      "expression": "SUM(`anomaly_2sd`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "DATE_TRUNC(\"YEAR\", `date`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(anomaly_2sd)"
+                },
+                "period": {
+                  "fieldName": "yearly(date)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Number of Anomalies (Yearly) - 2sd"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 5,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "db4988fb",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "2ca97230",
+                  "fields": [
+                    {
+                      "name": "yearly(date)",
+                      "expression": "DATE_TRUNC(\"YEAR\", `date`)"
+                    },
+                    {
+                      "name": "sum(anomaly_3sd)",
+                      "expression": "SUM(`anomaly_3sd`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "DATE_TRUNC(\"YEAR\", `date`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(anomaly_3sd)"
+                },
+                "period": {
+                  "fieldName": "yearly(date)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Number of Anomalies (Yearly) - 3sd"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 11,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "region-market",
+            "queries": [
+              {
+                "name": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_site",
+                "query": {
+                  "datasetName": "2ca97230",
+                  "fields": [
+                    {
+                      "name": "site",
+                      "expression": "`site`"
+                    },
+                    {
+                      "name": "site_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "site",
+                    "queryName": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_site"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Region/Market"
+              },
+              "disallowAll": true
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 3,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "platform",
+            "queries": [
+              {
+                "name": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_platform",
+                "query": {
+                  "datasetName": "2ca97230",
+                  "fields": [
+                    {
+                      "name": "platform",
+                      "expression": "`platform`"
+                    },
+                    {
+                      "name": "platform_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "platform",
+                    "queryName": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_platform"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Platform"
+              },
+              "disallowAll": true
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 3,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "metric",
+            "queries": [
+              {
+                "name": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_metric_type",
+                "query": {
+                  "datasetName": "2ca97230",
+                  "fields": [
+                    {
+                      "name": "metric_type",
+                      "expression": "`metric_type`"
+                    },
+                    {
+                      "name": "metric_type_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "metric_type",
+                    "queryName": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_metric_type"
+                  }
+                ]
+              },
+              "disallowAll": true,
+              "frame": {
+                "showTitle": true,
+                "title": "Metric"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 6,
+            "height": 1
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "cfd14945",
+      "displayName": "Anomaly Summary",
+      "layout": [
+        {
+          "widget": {
+            "name": "02bd53ef",
+            "queries": [
+              {
+                "name": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_date",
+                "query": {
+                  "datasetName": "2ca97230",
+                  "fields": [
+                    {
+                      "name": "date",
+                      "expression": "`date`"
+                    },
+                    {
+                      "name": "date_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "date",
+                    "queryName": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_date"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Date"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "82070b5c",
+            "multilineTextboxSpec": {
+              "lines": [
+                "<span style=\"font-size:24px\">**Anomaly Snapshot**</span><br>- Percentage difference% between the prediction vs actual.\n",
+                "<p>&nbsp;</p>\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "8b4e17c7",
+            "queries": [
+              {
+                "name": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_site",
+                "query": {
+                  "datasetName": "2ca97230",
+                  "fields": [
+                    {
+                      "name": "site",
+                      "expression": "`site`"
+                    },
+                    {
+                      "name": "site_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "site",
+                    "queryName": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_site"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Site"
+              },
+              "disallowAll": true
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "81e7d9d0",
+            "queries": [
+              {
+                "name": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_metric_type",
+                "query": {
+                  "datasetName": "2ca97230",
+                  "fields": [
+                    {
+                      "name": "metric_type",
+                      "expression": "`metric_type`"
+                    },
+                    {
+                      "name": "metric_type_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "metric_type",
+                    "queryName": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_metric_type"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Metric"
+              },
+              "disallowAll": true
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "b1adc392",
+            "queries": [
+              {
+                "name": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_platform",
+                "query": {
+                  "datasetName": "2ca97230",
+                  "fields": [
+                    {
+                      "name": "platform",
+                      "expression": "`platform`"
+                    },
+                    {
+                      "name": "platform_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "platform",
+                    "queryName": "dashboards/01f0def9ae4f1564b3a2cc25fa7bc786/datasets/01f0f1b99a9c1bc697443d652f79d9e5_platform"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Platform"
+              },
+              "disallowAll": true
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 3,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "summary-of-detected-anomalies",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "2ca97230",
+                  "fields": [
+                    {
+                      "name": "date",
+                      "expression": "`date`"
+                    },
+                    {
+                      "name": "site",
+                      "expression": "`site`"
+                    },
+                    {
+                      "name": "metric_type",
+                      "expression": "`metric_type`"
+                    },
+                    {
+                      "name": "rolling_avg",
+                      "expression": "`rolling_avg`"
+                    },
+                    {
+                      "name": "pct_diff",
+                      "expression": "`pct_diff`"
+                    },
+                    {
+                      "name": "metric_value",
+                      "expression": "`metric_value`"
+                    },
+                    {
+                      "name": "lower_3sd",
+                      "expression": "`lower_3sd`"
+                    },
+                    {
+                      "name": "upper_3sd",
+                      "expression": "`upper_3sd`"
+                    },
+                    {
+                      "name": "anomaly_filter_3sd",
+                      "expression": "`anomaly_filter_3sd`"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`anomaly_filter_3sd` IN ('Anomaly')"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "date",
+                    "displayName": "Date"
+                  },
+                  {
+                    "fieldName": "site",
+                    "displayName": "Site"
+                  },
+                  {
+                    "fieldName": "metric_type",
+                    "displayName": "Metric"
+                  },
+                  {
+                    "fieldName": "rolling_avg",
+                    "displayName": "Prediction"
+                  },
+                  {
+                    "fieldName": "pct_diff",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 2
+                      },
+                      "significantFigures": {
+                        "type": "all"
+                      },
+                      "hideGroupSeparator": true
+                    },
+                    "displayName": "Diff (%)",
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0"
+                            },
+                            "operator": ">"
+                          },
+                          "backgroundColor": "#00A972"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0"
+                            },
+                            "operator": "<"
+                          },
+                          "backgroundColor": {
+                            "themeColorType": "visualizationColors",
+                            "position": 4
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "fieldName": "metric_value",
+                    "contentAlignment": "right",
+                    "displayName": "Actual"
+                  },
+                  {
+                    "fieldName": "lower_3sd"
+                  },
+                  {
+                    "fieldName": "upper_3sd"
+                  },
+                  {
+                    "fieldName": "anomaly_filter_3sd",
+                    "displayName": "Classification"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Summary of Detected Anomalies",
+                "showDescription": true,
+                "description": "Using 3 standard deviation"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 6,
+            "height": 7
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    },
+    "applyModeEnabled": false
+  }
+}
